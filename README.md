@@ -18,7 +18,7 @@ Kurulum: [`00-ortam/kurulum.sql`](00-ortam/kurulum.sql). Sorgular VS Code + SQLT
 | 1 | Veri diskte nasıl saklanır ve okunur | `01-sayfa-yapisi` | ✅ |
 | 2 | Execution plan okuma | `02-execution-plan` | ✅ |
 | 3 | İndeksleme ve sorgu yazımı | `03-indeksleme` | ✅ |
-| 4 | İstatistikler, bakım, konfigürasyon | — | ⏳ sırada |
+| 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | 📝 script hazır, deneyler sırada |
 | 5 | Partitioning | `05-partitioning` | ✅ |
 | 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.3 ✅, 6.4–6.5 ⏳ |
 
