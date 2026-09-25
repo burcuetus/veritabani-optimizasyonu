@@ -18,9 +18,9 @@ Kurulum: [`00-ortam/kurulum.sql`](00-ortam/kurulum.sql). Sorgular VS Code + SQLT
 | 1 | Veri diskte nasıl saklanır ve okunur | `01-sayfa-yapisi` | ✅ |
 | 2 | Execution plan okuma | `02-execution-plan` | ✅ |
 | 3 | İndeksleme ve sorgu yazımı | `03-indeksleme` | ✅ |
-| 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | 📝 script hazır, deneyler sırada |
+| 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | 📝 script hazır, deneyler yapılmadı |
 | 5 | Partitioning | `05-partitioning` | ✅ |
-| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.3 ✅, 6.4–6.5 ⏳ |
+| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.3 ✅ deneyli, 6.4–6.5 📝 kavram notu |
 
 Ayrıntılı notlar `notlar/` klasöründe. Dosyalar numara sırasıyla çalıştırılır. Her dosyanın başında hangi bağlantıda çalışacağı yazılıdır.
 
@@ -33,6 +33,10 @@ Ayrıntılı notlar `notlar/` klasöründe. Dosyalar numara sırasıyla çalış
 | `genis` | 8 | 251 MB | 32.158 | 31 |
 
 `SELECT count(id) FROM genis` da 32.158 sayfa okudu. Satır yönelimli depolamada tek kolon istemek disk okumasını azaltmaz.
+
+- **MVCC:** Tek satırlık UPDATE sayfada 4. bir satır sürümü oluşturdu; VACUUM sonrası eski yuva `LP_REDIRECT` oldu (HOT zinciri).
+- **Şişme:** Tüm tablo güncellenince `dar` 42 MB'tan 84 MB'a çıktı; VACUUM alanı diske iade etmedi.
+- **Ring buffer:** Yeni taranan `dar` tablosunun önbellekteki payı %1,8 kaldı; büyük taramalar önbelleği doldurmaz.
 
 ### 2. Execution plan
 | Deney | Önce | Sonra |
@@ -87,6 +91,12 @@ Tek makinede en iyi partition anahtarı olan tarih, çok makinede sıcak nokta y
 
 Son satırdaki fark açık bırakıldı: koordinatör üzerinden gelen sorgu shard'da farklı çalışıyor. Sonraki adım `auto_explain`.
 
+## Açık kalanlar
+
+- **4. adımın deneyleri:** `04-istatistik-bakim` klasöründeki script hazır, ölçümler yapılmadı.
+- **6.3'teki fark:** Aynı sorgu shard'da doğrudan 120 ms, koordinatör üzerinden ~1,1 s sürdü. Araştırma yolu `auto_explain` ile 4.10'da yazılı.
+- **6.4–6.5:** Deney yerine kavram notu olarak yazıldı: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
+
 ## Temel dersler
 
 1. Maliyet okunan **sayfa** sayısıdır; WHERE filtresi okumayı azaltmaz, indeks azaltır.
@@ -96,3 +106,5 @@ Son satırdaki fark açık bırakıldı: koordinatör üzerinden gelen sorgu sha
 5. Taşıma sonrası gerçek bir INSERT ile test et.
 6. Dağıtık sistemlerde maliyeti gidiş-dönüş sayısı belirler.
 7. Rakamlar mantıksız görünüyorsa ilk soru: "doğru veritabanında mıyım?"
+8. Replikasyon okumayı ölçekler, yazmayı ölçeklemez; senkron replikasyonun bedeli kullanılabilirliktir.
+9. Sharding bir performans ayarı değil, geri alınması neredeyse imkânsız bir mimari karardır.

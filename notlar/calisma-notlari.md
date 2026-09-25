@@ -37,6 +37,53 @@ Sebebi **satır yönelimli depolama**. Bir satırın bütün kolonları sayfada 
 - Disk maliyetini düşürmenin yolları: tabloyu dar tutmak, covering index ve partitioning. Üçü de sonraki adımlarda denendi.
 - ClickHouse, DuckDB ve Parquet gibi sütun yönelimli sistemler kolonları ayrı ayrı saklar. Bu yüzden tek kolonluk bir sorgu gerçekten sadece o kolonun baytlarını okur. Analitik sorgularda hızlı olmalarının sebebi bu.
 
+### MVCC: yerinde güncelleme yoktur
+
+Her UPDATE, yeni bir satır sürümü yazar ve eskisini ölü olarak işaretler. Üç satırlık `mvcc_test` tablosunda tek bir satırı güncelledik; sayfada 4 satır oluştu:
+
+| lp | lp_len | t_xmin | t_xmax | Durum |
+|---|---|---|---|---|
+| 1 | 32 | 762 | 0 | Canlı |
+| 2 | 35 | 762 | 763 | Ölü (eski hali) |
+| 3 | 35 | 762 | 0 | Canlı |
+| 4 | 36 | 763 | 0 | Canlı (yeni hali) |
+
+763 numaralı işlem hem eski satırı öldürdü hem yenisini yazdı. Eski satırın `t_ctid` değeri yenisine işaret ediyordu: `(0,4)`. Sebebi eşzamanlılık: başka bir kullanıcı o satırı okuyor olabilir ve kendi işlemi boyunca tutarlı bir görüntü görmelidir.
+
+VACUUM sonrası `lp_flags` değerleri:
+
+| Değer | Anlamı |
+|---|---|
+| 0 | Boş, yeniden kullanılabilir |
+| 1 | Normal, canlı |
+| 2 | Yönlendirme (LP_REDIRECT) |
+| 3 | Ölü, henüz temizlenmedi |
+
+Bizde 2 çıktı, yani bir **HOT zinciri** oluşmuştu. Yeni sürüm aynı sayfaya sığdığı ve güncellenen kolon indekssiz olduğu için indeksler hiç güncellenmedi. VACUUM eski yuvayı silmek yerine yönlendirmeye çevirdi, çünkü bir indeks o yuva numarasına işaret ediyor olabilir. HOT'un iki şartı var: yeni sürüm aynı sayfaya sığmalı ve güncellenen kolonda indeks olmamalı. `fillfactor` ayarı, sayfalarda bu iş için boş yer bırakmak içindir.
+
+### Gerçek ölçekte şişme (bloat)
+
+`dar` tablosunun tamamını güncelledik: **42 MB → 84 MB**. Autovacuum kendiliğinden devreye girip ölü satırları temizledi (`last_autovacuum` 11:47), ama `free_space` 44 MB olarak kaldı.
+
+VACUUM alanı diske iade etmez, sadece "yeniden kullanılabilir" olarak işaretler. Sorgular hâlâ iki kat sayfa okur. Tabloyu gerçekten küçültmek için `VACUUM FULL` (tabloyu kilitler) ya da `pg_repack` gerekir.
+
+### Önbellek ve ring buffer
+
+Sayfalar `shared_buffers` içinde tutulur (bizde 128 MB). Ölçüm:
+
+| Tablo | Önbellekte | Toplam | Oran |
+|---|---|---|---|
+| dar (yeni tarandı) | 96 sayfa | 5.406 | %1,8 |
+| genis (dokunulmadı) | 5.183 sayfa | 32.158 | %16 |
+
+Sonuç beklentinin tersi çıktı. Sebebi **ring buffer**: PostgreSQL büyük sıralı taramalar için kendine 256 kB'lık küçük bir halka ayırır. Böylece tek seferlik bir tarama, sürekli kullanılan sayfaları önbellekten atmaz.
+
+İki sonucu var:
+- Büyük tablo taramaları önbellekten faydalanamaz; her seferinde diske gider.
+- Aynı sorguyu iki kez çalıştırıp "hızlandı" demek yanıltıcıdır. Değişen tek şey önbelleğin sıcaklığı olabilir.
+
+Bunu sonradan tekrar gördük: `VACUUM FULL` sonrası plan `read=5406` gösterdi, hiç `hit` yoktu. Tablo yeni bir dosyaya yazıldığı için eski sayfalar önbellekten düşmüştü.
+
 
 ## 2. Adım: Execution plan okuma
 Deney 5 — İndekssiz başlangıç

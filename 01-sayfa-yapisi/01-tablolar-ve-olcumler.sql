@@ -61,6 +61,19 @@ CREATE TABLE kucuk AS SELECT * FROM dar LIMIT 100000;
 -- EXPLAIN (ANALYZE, BUFFERS) SELECT count(id) FROM genis;
 --   Yine 32.158 sayfa: satır yönelimli depolamada tek kolon istemek
 --   disk okumasını azaltmaz (fayda ağ/bellek/sıralama tarafında).
+--
+-- MVCC (mvcc_test, id=2 güncellendi): sayfada 4 satır
+--   lp=2  t_xmin=762 t_xmax=763  -> ölü eski sürüm, t_ctid=(0,4)
+--   lp=4  t_xmin=763 t_xmax=0    -> canlı yeni sürüm
+--   VACUUM sonrası lp_flags=2 (LP_REDIRECT) -> HOT zinciri
+--
+-- Şişme: UPDATE dar SET ... (tüm tablo) -> 42 MB -> 84 MB
+--   autovacuum temizledi ama free_space 44 MB kaldı; VACUUM alanı
+--   diske iade etmez (VACUUM FULL / pg_repack gerekir)
+--
+-- Önbellek (shared_buffers 128 MB):
+--   dar (yeni tarandı)   96 / 5.406 sayfa  (%1,8)   <- ring buffer (256 kB)
+--   genis (dokunulmadı)  5.183 / 32.158    (%16)
 -- Ayrıntı: notlar/calisma-notlari.md
 
 
