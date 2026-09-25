@@ -1,0 +1,14 @@
+-- ============================================================
+-- EK — Transaction bloğunda ÇALIŞMAYAN komutlar
+-- ============================================================
+--   VACUUM
+--   CREATE DATABASE
+--   CREATE INDEX CONCURRENTLY
+--   DROP INDEX CONCURRENTLY
+--   REINDEX CONCURRENTLY
+--   ALTER SYSTEM
+--
+-- SQLTools birden fazla ifadeyi tek transaction'da gönderir.
+-- Bu komutları başka hiçbir ifade olmadan, tek başına çalıştırın.
+-- Migration araçları (Flyway, Liquibase, Django) da her dosyayı
+-- transaction'a sarar; CONCURRENTLY kullanacaksanız o davranışı kapatın.

@@ -1,0 +1,12 @@
+# Editör ve bağlantı ayarları (parolalar içerebilir)
+.vscode/
+*.code-workspace
+
+# Yerel ortam / sırlar
+.env
+*.env
+*.local.sql
+
+# İşletim sistemi
+.DS_Store
+Thumbs.db
