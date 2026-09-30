@@ -54,6 +54,39 @@ Bizim kurulumumuz `hash % 2`. Üçüncü bir shard eklemek için `hash % 3`'e ge
 
 6.3'te elle kurduğumuz yapının sınırlarını gördük: ara toplama shard'a gidemedi, istatistik yoktu, 2PC yok, yeniden dengeleme elle. Gerçek sistemler bu boşlukları kapatıyor.
 
+### Citus'ta aynı kurulum (denendi, veri yüklenmeden bırakıldı)
+
+1 koordinatör + 2 worker Docker'da ayağa kaldırıldı ve kümeye kaydedildi. Veri yükleme adımında deneme bırakıldı; komutlar tekrar denemek isteyen için:
+
+```bash
+docker network create citusnet
+docker run -d --name citus-w1 --network citusnet -e POSTGRES_HOST_AUTH_METHOD=trust citusdata/citus:latest
+docker run -d --name citus-w2 --network citusnet -e POSTGRES_HOST_AUTH_METHOD=trust citusdata/citus:latest
+docker run -d --name citus-coord --network citusnet -p 127.0.0.1:5436:5432 -e POSTGRES_HOST_AUTH_METHOD=trust citusdata/citus:latest
+```
+
+(`trust` sadece laboratuvar içindir; koordinatör portu yalnızca `127.0.0.1`'e açıldı.)
+
+```sql
+SELECT citus_set_coordinator_host('citus-coord', 5432);
+SELECT citus_add_node('citus-w1', 5432);
+SELECT citus_add_node('citus-w2', 5432);
+-- pg_dist_node: citus-coord shouldhaveshards=false, worker'lar true
+
+CREATE TABLE siparis (
+  id bigserial, musteri_id int NOT NULL, tutar numeric(10,2) NOT NULL,
+  olusturma timestamptz NOT NULL,
+  PRIMARY KEY (id, musteri_id)          -- dağıtım anahtarı PK'de olmak ZORUNDA (5. adımdaki kural)
+);
+CREATE TABLE musteri (id int PRIMARY KEY, ad text);
+SELECT create_distributed_table('siparis', 'musteri_id');                        -- 32 sanal shard
+SELECT create_distributed_table('musteri', 'id', colocate_with => 'siparis');    -- 6.4.1'deki co-location, tek parametre
+```
+
+6.3 ile karşılaştırma: iki shard veritabanı, iki `SERVER`, iki `USER MAPPING`, partitioned tablo ve foreign table'lar yerine iki fonksiyon çağrısı. İndeks koordinatörde bir kez yazılır, bütün shard'lara uygulanır. 6.4'te gördüğümüz eksikleri (ara toplamanın shard'a gitmemesi, 2PC olmaması, elle yeniden dengeleme) Citus kendisi kapatıyor: `citus_rebalance_start()`, çok düğümlü yazmalarda otomatik 2PC.
+
+Not: SQLTools birden çok ifadeyi tek transaction'da gönderdiği için yükleme sırasındaki hata (bkz. `03-indeksleme` dosyasındaki interval notu) tablo oluşturma ve dağıtım dahil her şeyi geri aldı.
+
 | Sistem | Ne | Güçlü olduğu yer | Bedeli |
 |---|---|---|---|
 | **Citus** | PostgreSQL eklentisi. Dağıtık tablo, referans tablo, co-location, ara toplamayı shard'a gönderme, çevrimiçi yeniden dengeleme | Çok kiracılı (multi-tenant) SaaS, gerçek zamanlı analitik. PostgreSQL ekosisteminden çıkmadan ölçeklemek | Shard key tasarımı hâlâ senin sorumluluğunda; shard'lar arası JOIN ve transaction'lar pahalı kalır |

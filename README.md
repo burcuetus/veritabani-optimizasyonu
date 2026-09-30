@@ -20,7 +20,7 @@ Kurulum: [`00-ortam/kurulum.sql`](00-ortam/kurulum.sql). Sorgular VS Code + SQLT
 | 3 | İndeksleme ve sorgu yazımı | `03-indeksleme` | ✅ |
 | 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | ✅ |
 | 5 | Partitioning | `05-partitioning` | ✅ |
-| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.4 ✅, 6.5 (Citus) sırada |
+| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | ✅ (6.1–6.4 deneyli, 6.5 kavram notu + Citus küme kurulumu) |
 
 Ayrıntılı notlar `notlar/` klasöründe. Dosyalar numara sırasıyla çalıştırılır. Her dosyanın başında hangi bağlantıda çalışacağı yazılıdır.
 
@@ -112,9 +112,9 @@ Son satırdaki fark 4.10'da `auto_explain` ile çözüldü: postgres_fdw sorguyu
 | 2M satır, `bigint` vs rastgele UUID | 4.422 vs 12.232 ms; indeks 43 vs 77 MB |
 | 2 → 3 shard: `hash % 3` vs partition bölme | %66,3 vs %25,0 veri taşınır; bölme 50/25/25 dengesiz bırakır |
 
-## Açık kalanlar
+## Kapsam notu
 
-- **6.5:** Citus ile gerçek bir küme (1 koordinatör + 2 worker) üzerinde deneyler sırada. Kavramsal karşılaştırma: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
+6.5 (Citus, Vitess, CockroachDB) deney yerine kavram notu olarak yazıldı; Citus kümesi kuruldu ama veri yüklenmeden bırakıldı. Ayrıntı: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
 
 ## Temel dersler
 

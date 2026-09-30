@@ -22,7 +22,7 @@ CREATE TABLE canli (
 INSERT INTO canli (musteri_id, tutar, olusturma)
 SELECT (random() * 1000)::int + 1,
        (random() * 500)::numeric(10,2),
-       now() - (random() * 365 || ' days')::interval
+       now() - random() * interval '365 days'
 FROM generate_series(1, 500000) g;
 
 CREATE INDEX idx_canli_musteri ON canli (musteri_id);

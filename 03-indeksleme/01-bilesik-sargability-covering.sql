@@ -14,12 +14,16 @@ CREATE TABLE siparis (
   email       text
 );
 
+-- NOT: Orijinal formül (random() * 730 || ' days')::interval idi. random()
+-- çok küçük bir değer üretince sayı metne '9.47e-05' gibi bilimsel gösterimle
+-- çevriliyor ve interval ayrıştırılamıyor (2M satırda ~%25 ihtimalle hata;
+-- Citus kurulumunda karşılaştık). Doğrudan interval ile çarpmak güvenli.
 -- 2M satır, 50k müşteri, 2 yıla yayılmış tarihler (~190 MB, 24.373 sayfa)
 INSERT INTO siparis (musteri_id, durum, tutar, olusturma, email)
 SELECT (random() * 50000)::int + 1,
        (ARRAY['yeni','hazirlaniyor','kargoda','teslim','iptal'])[(random()*4)::int + 1],
        (random() * 5000)::numeric(10,2),
-       now() - (random() * 730 || ' days')::interval,
+       now() - random() * interval '730 days',   -- metne çevirme! bkz. not
        'kullanici' || g || '@ornek.com'
 FROM generate_series(1, 2000000) g;
 
