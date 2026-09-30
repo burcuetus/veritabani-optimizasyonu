@@ -2,28 +2,12 @@
 -- Adım 4 — İstatistikler, bakım ve konfigürasyon
 -- Bağlantı: perflab (aksi yazılmadıkça)
 -- Kaynak: perflab_setup.sql Bölüm 4, gözden geçirilmiş hali
---
--- DURUM: Deneyler henüz çalıştırılmadı. Sonuçlar ölçüldükçe
--- "-- Sonuç:" satırları eklenecek.
---
--- Orijinal plandan düzeltilenler:
---   4.1  autovacuum tabloyu kendiliğinden ANALYZE edip bayatlığı
---        siliyordu -> tabloda autovacuum kapatıldı, veri ANALYZE'dan
---        SONRA büyük ölçüde değiştiriliyor.
---   4.2  'durum' kolonunda 5 değer var; 100 kova zaten yetiyor, deney
---        fark göstermezdi -> çok değerli, çarpık dağılımlı yeni kolon.
---   4.6  ORDER BY ... LIMIT 100 top-N heapsort kullanır, diske hiç
---        taşmaz -> LIMIT'siz sıralama (EXPLAIN ANALYZE satır göndermez).
---   4.9  pg_stat_statements postgres:17 imajında mevcut; sadece
---        shared_preload_libraries + yeniden başlatma gerekiyor.
---   4.10 auto_explain eklendi (6.3'te açık kalan soru için).
+-- Deneyler 29–30 Eylül 2026'da çalıştırıldı; sonuçlar "-- Sonuç:" satırlarında.
 -- ============================================================
 
 
 -- ---------- 4.1 İstatistikler bayatlayınca ----------
 -- Optimizer tabloya bakmaz, ANALYZE'ın bıraktığı özete bakar.
--- Veri değişip özet eski kalırsa, artık var olmayan bir tablo için
--- plan yapılır. "Dün hızlıydı, bugün yavaş" sorunlarının en yaygın sebebi.
 
 DROP TABLE IF EXISTS bayat;
 CREATE TABLE bayat (id int, kategori int, deger text)
@@ -36,9 +20,10 @@ FROM generate_series(1, 1000000) g;
 CREATE INDEX idx_bayat_kategori ON bayat (kategori);
 ANALYZE bayat;
 
--- Başlangıç: 100 kategori x 10.000 satır, istatistik doğru
 EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM bayat WHERE kategori = 42;
--- Beklenen: tahmin ≈ gerçek ≈ 10.000, Bitmap Scan
+-- Sonuç: tahmin 9.733, gerçek 10.000, Bitmap Heap Scan, 38 ms
+--        Heap Blocks: exact=10000 -> 10 bin satır için 10 bin sayfa
+--        (g % 100: aranan satırlar her sayfaya birer tane dağılmış)
 
 -- Veri değişiyor, istatistik değişmiyor: 1M satır daha, hepsi kategori 42
 INSERT INTO bayat
@@ -46,24 +31,32 @@ SELECT g, 42, repeat('x', 50)
 FROM generate_series(1000001, 2000000) g;
 
 EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM bayat WHERE kategori = 42;
--- Beklenen: tahmin ~%1 (≈20.000), gerçek ~1.010.000
--- -> yarım tabloyu indeks üzerinden okumaya çalışan yanlış plan
+-- Sonuç: tahmin 19.467, gerçek 1.010.000 (52x hata), Bitmap, 295 ms
+--        Toplam satır dosya boyutundan GÜNCEL tahmin ediliyor (2M);
+--        bayat olan DAĞILIM bilgisi (%1).
+--        dirtied=4526: toplu INSERT sonrası ilk okuma hint bit yazar
+
+-- Bayat mı? Üretimde bakılacak yer:
+SELECT last_analyze, n_mod_since_analyze
+FROM pg_stat_user_tables WHERE relname = 'bayat';
+-- Sonuç: n_mod_since_analyze = 1.000.000
 
 ANALYZE bayat;
 EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM bayat WHERE kategori = 42;
--- Beklenen: tahmin düzelir, Seq Scan'e geçer
+-- Sonuç: tahmin 1.012.933 (doğru), plan YİNE Bitmap (maliyet 49.096), 281 ms
 
--- Tahmin/gerçek oranı 10x'i aşıyorsa ilk şüpheli bayat istatistiktir:
--- SELECT relname, last_analyze, last_autoanalyze, n_mod_since_analyze
--- FROM pg_stat_user_tables WHERE relname = 'bayat';
+-- ÜÇÜNÜ TEK BLOK halinde: Seq Scan ile karşılaştırma
+SET enable_bitmapscan = off;
+EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM bayat WHERE kategori = 42;
+RESET enable_bitmapscan;
+-- Sonuç: Seq Scan maliyet 50.260 (%2 fark), 1.282 ms
+--        Bitmap tablonun ~tamamını okurken maliyeti sıralı okumaya yakın.
+-- DERS: Doğru istatistik her zaman planı değiştirmez; asıl zarar tahminin
+--       başka kararları (JOIN türü, bellek) beslediği sorgularda çıkar.
 
 
 -- ---------- 4.2 İstatistik çözünürlüğü ----------
--- Varsayılan: kolon başına 100 MCV + 100 kovalık histogram.
--- Az değerli kolonlarda (ör. durum: 5 değer) zaten yeterli.
--- Çok değerli ve çarpık dağılımlı kolonlarda yetmeyebilir.
-
--- SHOW default_statistics_target;   -- 100
+-- MCV (en sık 100 değer) + 100 kovalık histogram.
 
 DROP TABLE IF EXISTS carpik;
 CREATE TABLE carpik AS
@@ -72,25 +65,20 @@ SELECT g AS id,
 FROM generate_series(1, 1000000) g;
 ANALYZE carpik;
 
-EXPLAIN (ANALYZE) SELECT count(*) FROM carpik WHERE deger = 500;
--- Tahmin vs gerçek not edilecek
-
-ALTER TABLE carpik ALTER COLUMN deger SET STATISTICS 1000;
-ANALYZE carpik;
-
-EXPLAIN (ANALYZE) SELECT count(*) FROM carpik WHERE deger = 500;
--- Beklenen: tahmin gerçeğe yaklaşır (daha fazla değer MCV listesine girer)
-
--- SELECT attname, n_distinct, array_length(most_common_vals::text::text[], 1) AS mcv_sayisi
--- FROM pg_stats WHERE tablename = 'carpik';
-
--- Bedeli: ANALYZE uzar, planlama yavaşlar. Sadece sorunlu kolonlarda yapın.
+EXPLAIN (ANALYZE) SELECT count(*) FROM carpik WHERE deger = 50;
+-- Sonuç: tahmin 900, gerçek 904   (değer MCV listesinde)
+EXPLAIN (ANALYZE) SELECT count(*) FROM carpik WHERE deger = 5000;
+-- Sonuç: tahmin 31, gerçek 23     (listede yok, "geri kalan" ortalaması)
+--
+-- Beklenen hata ÇIKMADI: dağılım düzgün çarpık; varsayılan 100 yetiyor.
+-- SET STATISTICS ancak listenin DIŞINDA kalan bir değer beklenmedik
+-- sıklıktaysa gerekir. Yöntem: önce tahmin/gerçek karşılaştır, sapma
+-- görürsen o kolonda artır:
+--   ALTER TABLE carpik ALTER COLUMN deger SET STATISTICS 1000;
+--   ANALYZE carpik;
 
 
 -- ---------- 4.3 Kolonlar arası bağımlılık (extended statistics) ----------
--- Optimizer kolonları BAĞIMSIZ varsayar ve olasılıkları çarpar.
--- İlişkili kolonlarda tahmin çöker.
-
 DROP TABLE IF EXISTS bagimli;
 CREATE TABLE bagimli AS
 SELECT g AS id,
@@ -100,9 +88,9 @@ FROM generate_series(1, 500000) g;
 
 ANALYZE bagimli;
 
--- Tahmin: 1/50 × 1/50 = 1/2500 -> ~200 satır.  Gerçek: 10.000
 EXPLAIN (ANALYZE)
 SELECT count(*) FROM bagimli WHERE sehir = 10 AND posta_kodu = 10;
+-- Sonuç: tahmin 193, gerçek 10.000 (52x) -> 1/50 × 1/50 bağımsız varsayımı
 
 CREATE STATISTICS stat_bagimli (dependencies, ndistinct)
   ON sehir, posta_kodu FROM bagimli;
@@ -110,134 +98,152 @@ ANALYZE bagimli;
 
 EXPLAIN (ANALYZE)
 SELECT count(*) FROM bagimli WHERE sehir = 10 AND posta_kodu = 10;
--- Beklenen: tahmin ≈ 10.000
-
--- Gerçek şemalarda: ülke/şehir, marka/model, kategori/alt-kategori.
--- 6.3'te koordinatörün foreign table tahmini (683 vs ~31.000) aynı
--- kökten: optimizer'ın elinde doğru istatistik yok.
+-- Sonuç: tahmin 10.450, gerçek 10.000 (%4)
 
 
--- ---------- 4.4 Autovacuum ayarları ----------
--- Tetikleme: eşik = autovacuum_vacuum_threshold + scale_factor × satır
--- Varsayılan scale_factor = 0.2: tablonun %20'si ölü satır olmadan
--- çalışmaz. 100M satırlık tabloda 20M ölü satır!
-
--- SHOW autovacuum_vacuum_scale_factor;   -- 0.2
--- SHOW autovacuum_vacuum_threshold;      -- 50
-
+-- ---------- 4.4 Autovacuum ----------
+-- Tetikleme: 50 + 0.2 × satır ölü satır. Büyük tablolarda oranı düşür:
 ALTER TABLE siparis SET (autovacuum_vacuum_scale_factor = 0.02);
 
--- İzleme: olu_yuzde sürekli yüksekse autovacuum yetişemiyor
 SELECT relname, n_live_tup AS canli, n_dead_tup AS olu,
        round(n_dead_tup * 100.0 / NULLIF(n_live_tup + n_dead_tup, 0), 1) AS olu_yuzde,
        last_autovacuum, autovacuum_count
 FROM pg_stat_user_tables WHERE n_dead_tup > 0
-ORDER BY n_dead_tup DESC;
+ORDER BY n_dead_tup DESC LIMIT 8;
+-- Sonuç: boş. Container düzgün kapatılmadığı için (log: "not properly
+--        shut down; automatic recovery") pg_stat sayaçları sıfırlanmıştı.
 
 
 -- ---------- 4.5 Transaction wraparound ----------
--- İşlem numaraları (t_xmin) 32 bit; ~2 milyar işlemde başa döner.
--- Eski satırlar freeze edilmezse veritabanı YAZMAYI DURDURUR.
--- autovacuum_freeze_max_age (200M) aşılınca agresif freeze başlar.
-
-SELECT datname,
-       age(datfrozenxid) AS islem_yasi,
+SELECT datname, age(datfrozenxid) AS islem_yasi,
        2100000000 - age(datfrozenxid) AS kalan
-FROM pg_database ORDER BY age(datfrozenxid) DESC;
+FROM pg_database ORDER BY 2 DESC;
+-- Sonuç: bütün veritabanlarında 201
+-- Yaş SATIR değil İŞLEM sayısıyla artar: 2M satırlık INSERT tek işlem.
+-- Risk, saniyede binlerce küçük işlem yapan sistemlerde.
 
 
--- ---------- 4.6 work_mem: sıralama diske taşarsa ----------
--- SHOW work_mem;   -- 4MB
-
--- LIMIT YOK: LIMIT'li sorgu top-N heapsort ile birkaç KB'de biter,
--- diske taşmaz. EXPLAIN ANALYZE satırları istemciye göndermez.
+-- ---------- 4.6 work_mem ----------
+-- LIMIT YOK: LIMIT'li sorgu top-N heapsort ile birkaç KB'de biter.
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM siparis ORDER BY tutar;
--- Beklenen: Sort Method: external merge  Disk: ... kB  + temp read/written
+-- Sonuç: external merge Disk: 146 MB, temp read/written ~36.5k sayfa, 3.084 ms
 
 -- ÜÇÜNÜ TEK BLOK halinde:
 SET work_mem = '512MB';
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM siparis ORDER BY tutar;
 RESET work_mem;
--- Beklenen: Sort Method: quicksort  Memory: ... kB, temp yok
-
--- Karşılaştırma için:
--- EXPLAIN (ANALYZE) SELECT * FROM siparis ORDER BY tutar LIMIT 100;
--- -> top-N heapsort Memory: ~25kB
-
--- DİKKAT: work_mem bağlantı başına DEĞİL, İŞLEM başına.
--- 100 bağlantı × 3 sort/hash × 256MB = 75 GB. Global değeri ölçülü
--- tutup ihtiyaç duyan sorguda oturum bazında artırın.
+-- Sonuç: quicksort Memory: 217 MB, temp yok, 2.197 ms (%29 hızlı)
+--        Bellekte aynı iş daha fazla yer kaplıyor (146 -> 217 MB).
+--        Kazanç küçük: temp dosyalar OS önbelleğinde kaldı ve tablo iki
+--        seferde de diskten okundu (ring buffer).
+-- DİKKAT: work_mem İŞLEM başına. 100 bağlantı × 217 MB ≈ 21 GB.
 
 
--- ---------- 4.7 random_page_cost: SSD gerçeği ----------
--- 4.0 dönen disk varsayımı; SSD'de gerçek oran ~1.1.
--- Not: dar tablosu 2. adımda CLUSTER edildi; tutar/id correlation'ı
--- o anki duruma göre farklı plan verebilir. Önce pg_stats'a bakın.
-
+-- ---------- 4.7 random_page_cost ----------
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT sum(id) FROM dar WHERE tutar BETWEEN 5000 AND 5200;
+-- Sonuç: Bitmap, maliyet 6.044, read=5316, 286 ms
 
 -- ÜÇÜNÜ TEK BLOK halinde:
 SET random_page_cost = 1.1;
 EXPLAIN (ANALYZE, BUFFERS)
 SELECT sum(id) FROM dar WHERE tutar BETWEEN 5000 AND 5200;
 RESET random_page_cost;
+-- Sonuç: Bitmap, maliyet 5.992, hit=5316, 25 ms
+-- 11x hızlanma AYARDAN DEĞİL, önbellekten (read -> hit). Plan aynı, çünkü
+-- sorgu 5.406 sayfanın 5.295'ini açıyor. Karşılaştırmada Buffers'a bak!
 
--- Ayar "daha hızlı" değil, "gerçeğe daha yakın" yapıyor.
 
-
--- ---------- 4.8 Bellek ayarları özeti ----------
---   Parametre              Varsayılan  Öneri            Ne yapar
---   shared_buffers         128MB       RAM'in %25'i     Sayfa önbelleği
---   effective_cache_size   4GB         RAM'in %50-75'i  Sadece hesap; bellek ayırmaz
---   work_mem               4MB         16-64MB          Sort/hash (İŞLEM başına!)
---   maintenance_work_mem   64MB        512MB-2GB        VACUUM, CREATE INDEX hızı
---   random_page_cost       4.0         1.1 (SSD)        Plan seçimi
-
+-- ---------- 4.8 Bellek ayarları ----------
 SELECT name, setting, unit FROM pg_settings
 WHERE name IN ('shared_buffers','effective_cache_size','work_mem',
-               'maintenance_work_mem','random_page_cost','seq_page_cost');
+               'maintenance_work_mem','random_page_cost','max_connections');
+-- Sonuç (hepsi varsayılan; unit '8kB' = sayfa):
+--   shared_buffers 128 MB  (siparis 190 MB, sığmıyor)
+--   work_mem 4 MB, maintenance_work_mem 64 MB
+--   effective_cache_size 4 GB, random_page_cost 4, max_connections 100
 
 
 -- ---------- 4.9 pg_stat_statements ----------
--- postgres:17 imajında mevcut; yüklenmesi için yeniden başlatma şart.
--- TEK BAŞINA (ALTER SYSTEM transaction içinde çalışmaz):
-ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements,auto_explain';
-
+-- Liste ayarı TIRNAKSIZ yazılır. 'a,b' tek bir dosya adı sayılır ve
+-- sunucu AÇILMAZ (bizde oldu: FATAL: could not access file
+-- "pg_stat_statements,auto_explain").
+-- TEK BAŞINA:
+ALTER SYSTEM SET shared_preload_libraries = pg_stat_statements, auto_explain;
 -- PowerShell:  docker restart pgperf
--- (pgreplica kısa süre bağlantıyı kaybeder, sonra kendiliğinden yetişir)
+--
+-- Sunucu açılmazsa kurtarma (container dururken):
+--   docker run --rm --user postgres --volumes-from pgperf postgres:17 bash -c
+--     "sed -i '/shared_preload_libraries/d' /var/lib/postgresql/data/postgresql.auto.conf"
 
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
--- TOPLAM SÜREYE göre sıralayın, ortalamaya göre değil:
--- 5 ms süren ama saniyede 1000 kez çağrılan sorgu, 2 saniyelik
--- günlük rapordan çok daha fazla yük yaratır.
-SELECT round(total_exec_time::numeric, 1) AS toplam_ms,
-       calls AS cagri,
-       round(mean_exec_time::numeric, 2) AS ortalama_ms,
-       shared_blks_read AS disk_sayfa,
-       left(query, 80) AS sorgu
+-- İş yükü: 500 indeksli sorgu + 1 ağır sorgu
+DO $$
+BEGIN
+  FOR i IN 1..500 LOOP
+    PERFORM count(*) FROM siparis WHERE musteri_id = i;
+  END LOOP;
+END $$;
+SELECT count(*) FROM siparis WHERE abs(musteri_id) = 12345;
+
+SELECT left(query, 50) AS sorgu, calls AS cagri,
+       round(total_exec_time::numeric, 1) AS toplam_ms,
+       round(mean_exec_time::numeric, 3) AS ortalama_ms
 FROM pg_stat_statements
-ORDER BY total_exec_time DESC
-LIMIT 10;
+ORDER BY total_exec_time DESC LIMIT 5;
+-- Sonuç 1: DO bloğu TEK satır; içindeki 500 sorgu görünmedi (track = top).
+--          Fonksiyon içindeki yavaş sorgular varsayılan ayarla gizli kalır.
+-- Sonuç 2: SET pg_stat_statements.track = 'all'; ile tekrar ->
+--          "SELECT count(*) FROM siparis WHERE musteri_id = i" 500 çağrı,
+--          tek satırda. Tek seferlik abs() Seq Scan'i yine listenin tepesinde.
 
--- SELECT pg_stat_statements_reset();   -- sayaçları sıfırla
 
+-- ---------- 4.10 auto_explain: 6.3'teki açık soru ÇÖZÜLDÜ ----------
+-- Soru: shard1'de doğrudan 120 ms süren GROUP BY, koordinatör üzerinden
+-- neden ~466 ms+ sürüyordu?
 
--- ---------- 4.10 auto_explain: uygulamadan gelen sorgunun planı ----------
--- "Elle çalıştırınca hızlı, uygulamadan gelince yavaş" sorununun aracı.
--- Belli sürenin üstündeki her sorgunun GERÇEK planını log'a yazar.
--- 6.3'te açık kalan soru: koordinatörden gelen sorgu shard'da neden
--- 120 ms değil ~466 ms sürüyor?
-
--- Sadece shard1'e gelen sorgular için (perflab'da çalıştırın):
 ALTER DATABASE shard1 SET auto_explain.log_min_duration = 0;
 ALTER DATABASE shard1 SET auto_explain.log_analyze = on;
 ALTER DATABASE shard1 SET auto_explain.log_buffers = on;
 
--- Koordinatörden sorguyu tekrar çalıştırın (partition-wise GROUP BY),
--- sonra PowerShell:  docker logs --tail 60 pgperf
--- Log'daki plan ile doğrudan shard1'de alınan planı karşılaştırın.
+-- Koordinatörden (TEK BLOK):
+SET enable_partitionwise_aggregate = on;
+EXPLAIN (ANALYZE)
+SELECT musteri_id, count(*), sum(tutar)
+FROM siparis_dagitik
+WHERE olusturma >= '2026-09-01'
+GROUP BY musteri_id;
+-- PowerShell:  docker logs --since 2m pgperf
+--
+-- Sonuç (shard1 log):
+--   Query Text: DECLARE c1 CURSOR FOR SELECT musteri_id, count(*) ...
+--   GroupAggregate
+--     -> Index Scan using siparis_musteri_id_idx
+--          Rows Removed by Filter: 960092
+--          Buffers: shared hit=980954 read=8456
+--   duration: 2.438 ms
+--
+-- SEBEP: postgres_fdw sorguyu CURSOR ile çalıştırır. Cursor'lar için plan
+-- ilk %10'u en hızlı getirecek şekilde seçilir (cursor_tuple_fraction=0.1)
+-- -> indeks sırasıyla gruplama. Koordinatör ise sonucun TAMAMINI istiyor.
 
--- Geri almak:
--- ALTER DATABASE shard1 RESET ALL;
+-- DÜZELTME (kalıcı):
+ALTER DATABASE shard1 SET cursor_tuple_fraction = 1.0;
+ALTER DATABASE shard2 SET cursor_tuple_fraction = 1.0;
+
+-- Yeni ayarın geçerli olması için shard bağlantılarını yenile (TEK BLOK):
+SELECT postgres_fdw_disconnect_all();
+SET enable_partitionwise_aggregate = on;
+EXPLAIN (ANALYZE)
+SELECT musteri_id, count(*), sum(tutar)
+FROM siparis_dagitik
+WHERE olusturma >= '2026-09-01'
+GROUP BY musteri_id;
+-- Sonuç (shard1 log): HashAggregate -> Seq Scan, Buffers hit=7286, 144 ms
+--        (önce 2.438 ms, ~989k buffer)
+
+-- Teşhis bitince auto_explain'i kapat (her sorguyu ölçmek ek yük getirir):
+ALTER DATABASE shard1 RESET auto_explain.log_min_duration;
+ALTER DATABASE shard1 RESET auto_explain.log_analyze;
+ALTER DATABASE shard1 RESET auto_explain.log_buffers;

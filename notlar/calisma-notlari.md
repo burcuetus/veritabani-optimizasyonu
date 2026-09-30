@@ -231,6 +231,26 @@ SELECT indexrelname, pg_size_pretty(...), idx_scan FROM pg_stat_user_indexes ...
 
 Tablo 190 MB, indeksler 219 MB. İki indeks hiç kullanılmamıştı (idx_scan = 0). idx_siparis_email_lower tek başına 95 MB, çünkü metin kolonları indekste bütün olarak saklanıyor.
 
+## 4. Adım: İstatistikler, bakım, konfigürasyon
+
+Optimizer tabloya bakmaz, `ANALYZE`'ın bıraktığı özete bakar. Özet yanlışsa tahmin yanlış olur.
+
+**Bayat istatistik.** `bayat` tablosunda (autovacuum kapalı) 100 kategori × 10.000 satır vardı; tahmin 9.733, gerçek 10.000. 1 milyon satır daha eklendi, hepsi kategori 42. Tahmin 19.467, gerçek 1.010.000: 52 kat hata. Toplam satır sayısı dosya boyutundan güncel tahmin ediliyor; bayat olan, dağılım bilgisi. Tespit: `pg_stat_user_tables.n_mod_since_analyze` (1.000.000). ANALYZE sonrası tahmin düzeldi, ama plan değişmedi: tablonun ~tamamı okunacağı için Bitmap (maliyet 49.096) ile Seq Scan (50.260) neredeyse eşitti. Bayat istatistiğin asıl zararı, tahminin JOIN türü gibi başka kararları beslediği sorgularda çıkar.
+
+**İstatistik çözünürlüğü.** Çarpık dağılımlı `carpik` tablosunda tahminler zaten isabetliydi (900/904, 31/23). Varsayılan 100'lük MCV listesi yetiyor. `SET STATISTICS` ancak tahmin/gerçek sapması görülen kolonda gerekir.
+
+**Bağımlı kolonlar.** `sehir` ve `posta_kodu` birebir aynıyken optimizer olasılıkları çarptı: tahmin 193, gerçek 10.000. `CREATE STATISTICS (dependencies, ndistinct)` sonrası 10.450.
+
+**Bakım.** Ölü satır sorgusu boş geldi: container düzgün kapatılmadığı için istatistik sayaçları sıfırlanmıştı. Wraparound yaşı her veritabanında 201; yaş satır değil işlem sayısıyla artar.
+
+**work_mem.** `ORDER BY tutar` (LIMIT'siz) 4 MB ile diske taştı: external merge, 146 MB, 3.084 ms. 512 MB ile quicksort, 217 MB bellek, 2.197 ms. Kazanç küçük kaldı, çünkü tablo iki seferde de diskten okundu. `work_mem` işlem başına ayrıldığı için genel değer ölçülü tutulmalı.
+
+**random_page_cost.** 4 → 1,1 planı değiştirmedi (sorgu 5.406 sayfanın 5.295'ini açıyordu). Süre 286 → 25 ms düştü, ama bunun sebebi önbellekti: `read=5316` → `hit=5316`.
+
+**pg_stat_statements.** Varsayılan `track = top` ile DO bloğunun içindeki 500 sorgu görünmedi; `track = all` ile tek satırda 500 çağrı olarak toplandı. Kurulumda `shared_preload_libraries = 'a,b'` yazımı sunucunun açılmasını engelledi; liste tırnaksız yazılmalı.
+
+**auto_explain (6.3'ün açık sorusu).** Shard1'in log'u, koordinatörden gelen sorgunun `DECLARE CURSOR` ile çalıştığını ve Index Scan + GroupAggregate seçildiğini gösterdi (~989 bin buffer, 2.438 ms). Cursor'lar için plan ilk %10'a göre optimize ediliyor (`cursor_tuple_fraction = 0.1`). Shard'larda bu değer 1.0 yapılınca plan Seq Scan + HashAggregate'e döndü: 7.286 buffer, 144 ms.
+
 ## 5. Adım: Partitioning
 Kurulum
 

@@ -18,7 +18,7 @@ Kurulum: [`00-ortam/kurulum.sql`](00-ortam/kurulum.sql). Sorgular VS Code + SQLT
 | 1 | Veri diskte nasıl saklanır ve okunur | `01-sayfa-yapisi` | ✅ |
 | 2 | Execution plan okuma | `02-execution-plan` | ✅ |
 | 3 | İndeksleme ve sorgu yazımı | `03-indeksleme` | ✅ |
-| 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | 📝 script hazır, deneyler yapılmadı |
+| 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | ✅ |
 | 5 | Partitioning | `05-partitioning` | ✅ |
 | 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.3 ✅ deneyli, 6.4–6.5 📝 kavram notu |
 
@@ -55,6 +55,18 @@ Bir tablo diskte tek bir düzende durabilir: `CLUSTER` bir kolonun correlation'�
 | Covering index (`INCLUDE (tutar)`) | 42 → 4 sayfa |
 | İndeks maliyeti | Tablo 190 MB, indeksler 219 MB; iki indeks hiç kullanılmamış |
 
+### 4. İstatistikler, bakım, konfigürasyon
+| Deney | Sonuç |
+|---|---|
+| Bayat istatistik (1M satır eklendi, ANALYZE yok) | Tahmin 19.467, gerçek 1.010.000 (52×) |
+| Bağımlı kolonlar (şehir = posta kodu) | Tahmin 193 → `CREATE STATISTICS` ile 10.450; gerçek 10.000 |
+| `work_mem` 4 MB → 512 MB | external merge (146 MB disk) → quicksort (217 MB bellek), 3.084 → 2.197 ms |
+| `random_page_cost` 4 → 1,1 | Plan aynı; 286 → 25 ms farkı tamamen önbellekten (`read` → `hit`) |
+| `pg_stat_statements` | DO bloğundaki 500 sorgu varsayılanda görünmedi (`track = top`) |
+| `auto_explain` (6.3'ün açık sorusu) | postgres_fdw cursor'u yüzünden shard Index Scan seçmiş: 2.438 ms; `cursor_tuple_fraction = 1.0` ile 144 ms |
+
+Yan ders: `ALTER SYSTEM SET shared_preload_libraries = 'a,b'` iki adı tek dosya adı sayıyor ve sunucu açılmıyor; liste tırnaksız yazılmalı.
+
 ### 5. Partitioning
 | Deney | Normal tablo | Partition'lı |
 |---|---|---|
@@ -89,12 +101,10 @@ Tek makinede en iyi partition anahtarı olan tarih, çok makinede sıcak nokta y
 | Scatter-gather `count/sum`: varsayılan → partition-wise → async | 535 → 353 → 216 ms |
 | Shard key ile `GROUP BY` (toplama shard'a gitti) | 1.120 ms; aynı sorgu shard'da doğrudan 120 ms |
 
-Son satırdaki fark açık bırakıldı: koordinatör üzerinden gelen sorgu shard'da farklı çalışıyor. Sonraki adım `auto_explain`.
+Son satırdaki fark 4.10'da `auto_explain` ile çözüldü: postgres_fdw sorguyu cursor ile gönderiyor, shard cursor için "ilk %10'u hızlı getir" planı (Index Scan + GroupAggregate) seçiyordu. `cursor_tuple_fraction = 1.0` ile shard süresi 2.438 → 144 ms.
 
 ## Açık kalanlar
 
-- **4. adımın deneyleri:** `04-istatistik-bakim` klasöründeki script hazır, ölçümler yapılmadı.
-- **6.3'teki fark:** Aynı sorgu shard'da doğrudan 120 ms, koordinatör üzerinden ~1,1 s sürdü. Araştırma yolu `auto_explain` ile 4.10'da yazılı.
 - **6.4–6.5:** Deney yerine kavram notu olarak yazıldı: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
 
 ## Temel dersler
@@ -108,3 +118,5 @@ Son satırdaki fark açık bırakıldı: koordinatör üzerinden gelen sorgu sha
 7. Rakamlar mantıksız görünüyorsa ilk soru: "doğru veritabanında mıyım?"
 8. Replikasyon okumayı ölçekler, yazmayı ölçeklemez; senkron replikasyonun bedeli kullanılabilirliktir.
 9. Sharding bir performans ayarı değil, geri alınması neredeyse imkânsız bir mimari karardır.
+10. "Elle hızlı, uygulamadan yavaş" ise sorunun gerçekte çalıştığı yerdeki planına bak (`auto_explain`).
+11. Performans karşılaştırmasında önce `Buffers` satırına bak: `read` → `hit` farkı tek başına 10 kat hız yaratabilir.

@@ -132,7 +132,11 @@ GROUP BY musteri_id;
 -- Aynı sorgu doğrudan shard'da 120 ms, koordinatör üzerinden ilk satır 466 ms.
 RESET enable_async_append;
 
--- SONUÇ (açık bırakıldı): Fark shard'ın sorguyu postgres_fdw oturumunda
--- (cursor) farklı çalıştırmasından geliyor. Sonraki adım: shard'da
--- auto_explain ile gerçekte çalışan planı log'a yazdırmak.
+-- SONUÇ (4.10'da ÇÖZÜLDÜ, auto_explain ile):
+-- postgres_fdw sorguyu "DECLARE c1 CURSOR" ile gönderiyor. Cursor için
+-- plan ilk %10'u hızlı getirecek şekilde seçiliyor (cursor_tuple_fraction
+-- = 0.1): Index Scan + GroupAggregate, ~989k buffer, 2.438 ms.
+-- Düzeltme: ALTER DATABASE shard1/shard2 SET cursor_tuple_fraction = 1.0;
+--   -> Seq Scan + HashAggregate, 7.286 buffer, 144 ms.
+-- Ayrıntı: 04-istatistik-bakim/01-istatistik-bakim-konfig.sql (4.10)
 -- Ders: dağıtık sorgunun süresi parçalarının toplamı değildir.
