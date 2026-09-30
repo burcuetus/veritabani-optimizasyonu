@@ -20,7 +20,7 @@ Kurulum: [`00-ortam/kurulum.sql`](00-ortam/kurulum.sql). Sorgular VS Code + SQLT
 | 3 | İndeksleme ve sorgu yazımı | `03-indeksleme` | ✅ |
 | 4 | İstatistikler, bakım, konfigürasyon | `04-istatistik-bakim` | ✅ |
 | 5 | Partitioning | `05-partitioning` | ✅ |
-| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.3 ✅ deneyli, 6.4–6.5 📝 kavram notu |
+| 6 | Dağıtık sistemler, sharding | `06-dagitik-sistemler` | 6.1–6.4 ✅, 6.5 (Citus) sırada |
 
 Ayrıntılı notlar `notlar/` klasöründe. Dosyalar numara sırasıyla çalıştırılır. Her dosyanın başında hangi bağlantıda çalışacağı yazılıdır.
 
@@ -103,9 +103,18 @@ Tek makinede en iyi partition anahtarı olan tarih, çok makinede sıcak nokta y
 
 Son satırdaki fark 4.10'da `auto_explain` ile çözüldü: postgres_fdw sorguyu cursor ile gönderiyor, shard cursor için "ilk %10'u hızlı getir" planı (Index Scan + GroupAggregate) seçiyordu. `cursor_tuple_fraction = 1.0` ile shard süresi 2.438 → 144 ms.
 
+### 6.4 Shard'lar arası sorunlar
+| Deney | Sonuç |
+|---|---|
+| JOIN: `musteri` koordinatörde | ~1,98 M satır ağdan çekildi, 39 eşleşti, ~1.150 ms |
+| JOIN: `musteri` aynı anahtarla shard'lara bölündü | JOIN shard'a gitti, 39 satır, 20 ms (~57×) |
+| COMMIT anında shard2 düştü | İşlem hata verdi ama shard1'deki 3 satır kalıcı oldu (yarım işlem) |
+| 2M satır, `bigint` vs rastgele UUID | 4.422 vs 12.232 ms; indeks 43 vs 77 MB |
+| 2 → 3 shard: `hash % 3` vs partition bölme | %66,3 vs %25,0 veri taşınır; bölme 50/25/25 dengesiz bırakır |
+
 ## Açık kalanlar
 
-- **6.4–6.5:** Deney yerine kavram notu olarak yazıldı: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
+- **6.5:** Citus ile gerçek bir küme (1 koordinatör + 2 worker) üzerinde deneyler sırada. Kavramsal karşılaştırma: [`06-dagitik-sistemler/04-05-kavram-notlari.md`](06-dagitik-sistemler/04-05-kavram-notlari.md).
 
 ## Temel dersler
 

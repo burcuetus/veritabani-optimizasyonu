@@ -1,6 +1,6 @@
 # 6.4 ve 6.5: Kavram notları
 
-Bu iki bölüm deney yapılmadan, kavram notu olarak yazıldı. 6.3'teki `siparis_dagitik` kurulumu, buradaki fikirleri denemek için kullanılabilir.
+Kavramsal arka plan. 6.4'ün dört konusu deneylerle ölçüldü: [`04-shard-arasi-deneyler.sql`](04-shard-arasi-deneyler.sql).
 
 6.3'ün ana kuralı: **bir işlem, ancak tek bir shard'ın verisiyle tamamlanabiliyorsa shard'a gönderilebilir.** 6.4, bu kuralın çiğnendiği dört durumu anlatıyor.
 
